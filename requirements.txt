@@ -1,0 +1,6 @@
+asgiref==3.2.10
+gunicorn==20.0.4
+Jinja2==2.11.2
+pypandoc==1.5
+uvicorn==0.11.8
+uvloop==0.14.0
