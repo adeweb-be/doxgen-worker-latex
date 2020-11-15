@@ -20,6 +20,6 @@ workflows:
     jobs:
       - docker/publish:
           context: Adeweb-context
-          image: doxgen/worker
+          image: doxgen/worker-latex
           registry: docker.adeweb.dev
           tag: latest
