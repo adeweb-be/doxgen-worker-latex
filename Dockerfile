@@ -19,8 +19,7 @@ RUN apt-get update -qqy \
 
 RUN apt-get install -qqy --no-install-recommends python3-setuptools
 
-RUN mkdir /generated /templates
-VOLUME /generated /templates
+VOLUME /storage
 
 WORKDIR /srv
 
