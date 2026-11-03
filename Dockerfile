@@ -1,23 +1,18 @@
-FROM ubuntu:focal as builder
+FROM debian:trixie-slim
 ENV TZ=Europe/Brussels
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
+
+RUN apt-get update -qqy \
+    && apt-get install -qqy --no-install-recommends curl python3 python3-venv texlive-full pandoc \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY ./requirements.txt ./
-RUN apt-get update -qqy \
-    && apt-get install -qqy libffi-dev python3-pip python3-dev gcc musl-dev \
-    && python3 -m pip install --no-cache-dir -r requirements.txt
+RUN python3 -m venv /opt/venv \
+    && /opt/venv/bin/pip install --no-cache-dir -r requirements.txt
+ENV PATH="/opt/venv/bin:$PATH"
 
-FROM ubuntu:focal
-ENV TZ=Europe/Brussels
-RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
-
-COPY --from=builder /usr/local/lib/python3.8/ /usr/local/lib/python3.8/
-COPY --from=builder /usr/local/bin/ /usr/local/bin/
-
-RUN apt-get update -qqy \
-    && apt-get install -qqy --no-install-recommends curl texlive-full pandoc
-
-RUN apt-get install -qqy --no-install-recommends python3-setuptools
+# Compose runs the container with the host UID, which has no home directory.
+ENV HOME=/tmp
 
 VOLUME /storage
 
