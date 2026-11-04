@@ -8,9 +8,11 @@ from subprocess import Popen
 import jinja2
 import pypandoc as pypandoc
 from asgiref.sync import sync_to_async
+from jinja2.sandbox import ImmutableSandboxedEnvironment
 
 from doxgen_latex_worker.core.health import Health
 from doxgen_latex_worker.core.responses import response_header, handle_404
+from doxgen_latex_worker.core.security import InvalidRequest, is_authorized, storage_path
 
 
 def html2latex(value):
@@ -21,39 +23,52 @@ def md2latex(value):
     return pypandoc.convert_text(value, "latex", format="md")
 
 
-latex_jinja_env = jinja2.Environment(
-    block_start_string=r"\BLOCK{",
-    block_end_string="}",
-    variable_start_string=r"\VAR{",
-    variable_end_string="}",
-    comment_start_string=r"\#{",
-    comment_end_string="}",
-    line_statement_prefix="%%",
-    line_comment_prefix="%#",
-    trim_blocks=True,
-    autoescape=False,
-    loader=jinja2.FileSystemLoader(os.path.abspath("/storage")),
-)
-latex_jinja_env.filters["html2latex"] = html2latex
-latex_jinja_env.filters["md2latex"] = md2latex
+# kpathsea settings for pdflatex. Paranoid mode ("p") refuses absolute paths and "..",
+# so a document can read and write only in its build folder and in the TeX installation.
+TEX_ENV = {"openin_any": "p", "openout_any": "p", "shell_escape": "f"}
+
+
+def make_jinja_env(loader_path):
+    # The sandbox blocks access to Python internals from template expressions.
+    # The loader sees only the folder of the template, so includes cannot read other templates.
+    env = ImmutableSandboxedEnvironment(
+        block_start_string=r"\BLOCK{",
+        block_end_string="}",
+        variable_start_string=r"\VAR{",
+        variable_end_string="}",
+        comment_start_string=r"\#{",
+        comment_end_string="}",
+        line_statement_prefix="%%",
+        line_comment_prefix="%#",
+        trim_blocks=True,
+        autoescape=False,
+        loader=jinja2.FileSystemLoader(loader_path),
+    )
+    env.filters["html2latex"] = html2latex
+    env.filters["md2latex"] = md2latex
+    return env
 
 
 @sync_to_async
-def generate(template_path, generation_context, destination_path):
-    template = latex_jinja_env.get_template(template_path)
-    compile_tex(template.render(**generation_context), "/storage/" + destination_path)
+def generate(template_file, generation_context, destination_file):
+    env = make_jinja_env(os.path.dirname(template_file))
+    template = env.get_template(os.path.basename(template_file))
+    compile_tex(template.render(**generation_context), destination_file)
 
 
 def compile_tex(rendered_tex, out_pdf_path):
     tmp_dir = tempfile.mkdtemp()
     try:
-        in_tmp_path = os.path.join(tmp_dir, "out.tex")
-        with open(in_tmp_path, "w") as outfile:
+        with open(os.path.join(tmp_dir, "out.tex"), "w") as outfile:
             outfile.write(rendered_tex)
-        out_tmp_path = os.path.join(tmp_dir, "out.pdf")
-        p = Popen(["pdflatex", "-interaction=nonstopmode", f"-output-directory={tmp_dir}", in_tmp_path])
+        # Run in the build folder with a relative file name: paranoid mode refuses absolute paths.
+        p = Popen(
+            ["pdflatex", "-interaction=nonstopmode", "-no-shell-escape", "out.tex"],
+            cwd=tmp_dir,
+            env={**os.environ, **TEX_ENV},
+        )
         p.communicate()
-        shutil.move(out_tmp_path, out_pdf_path)
+        shutil.move(os.path.join(tmp_dir, "out.pdf"), out_pdf_path)
     finally:
         shutil.rmtree(tmp_dir)
 
@@ -68,8 +83,8 @@ async def read_body(receive):
     return body
 
 
-async def send_failure(send, error):
-    await send(response_header("json", 500))
+async def send_failure(send, error, status=500):
+    await send(response_header("json", status))
     return await send(
         {
             "type": "http.response.body",
@@ -85,15 +100,20 @@ GENERATION_LOCK = asyncio.Lock()
 async def document_generation_view(scope, receive, send):
     if scope["method"] != "POST":
         return await handle_404(scope, receive, send)
+    if not is_authorized(scope):
+        return await send_failure(send, "Unauthorized", status=401)
 
     payload = json.loads((await read_body(receive)).decode("utf-8"))
-    template_path = payload["template_path"]
     generation_context = payload["generation_context"]
-    destination_path = payload["destination_path"]
+    try:
+        template_file = storage_path(payload["template_path"])
+        destination_file = storage_path(payload["destination_path"])
+    except InvalidRequest as e:
+        return await send_failure(send, str(e), status=400)
     async with GENERATION_LOCK:
         try:
             await asyncio.wait_for(
-                generate(template_path, generation_context, destination_path),
+                generate(template_file, generation_context, destination_file),
                 timeout=int(os.getenv("GENERATION_TIMEOUT", default=120)),
             )
         except TimeoutError:
