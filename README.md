@@ -1,3 +1,8 @@
+> [!IMPORTANT]
+> This repository is archived. doxgen-worker-latex now lives in the doxgen monorepo,
+> [adeweb-be/doxgen](https://github.com/adeweb-be/doxgen) (private), in `workers/latex/`.
+> Its full history is kept there.
+
 # doxgen-worker
 
 ## Security
